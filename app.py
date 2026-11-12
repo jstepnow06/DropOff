@@ -1,6 +1,7 @@
 import hashlib
 import os
 import sqlite3
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -136,10 +137,9 @@ async def upload(request: Request, file: UploadFile = File(...)):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
-    original = file.filename or "upload.bin"
-    stored = original
+    original = Path(file.filename or "upload.bin").name or "upload.bin"
+    stored = f"{uuid.uuid4().hex}-{original}"
     dest = UPLOADS / stored
-    dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(await file.read())
     with db() as conn:
         conn.execute(
@@ -150,11 +150,24 @@ async def upload(request: Request, file: UploadFile = File(...)):
 
 
 @app.get("/download")
-def download(name: str):
-    path = os.path.join(str(UPLOADS), name)
-    if not os.path.isfile(path):
+def download(request: Request, name: str):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    with db() as conn:
+        file = conn.execute(
+            "SELECT stored_name, original_name FROM files WHERE user_id = ? AND stored_name = ?",
+            (user["id"], name),
+        ).fetchone()
+    if not file:
         return HTMLResponse("That file is not in the drop.", status_code=404)
-    return FileResponse(path, filename=os.path.basename(name))
+
+    upload_root = UPLOADS.resolve()
+    path = (upload_root / file["stored_name"]).resolve()
+    if upload_root not in path.parents or not path.is_file():
+        return HTMLResponse("That file is not in the drop.", status_code=404)
+    return FileResponse(path, filename=file["original_name"])
 
 
 @app.get("/health")
